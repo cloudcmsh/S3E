@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級出缺席管理系統</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e9e9e9; 
+            margin: 0;
+            padding: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+        .container {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 900px; 
+            position: relative;
+        }
+        
+        .tabs {
+            display: flex;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #ccc;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            background: none;
+            border: none;
+            font-size: 16px;
+            font-weight: bold;
+            color: #666;
+            cursor: pointer;
+            outline: none;
+        }
+        .tab-btn.active {
+            color: #333;
+            border-bottom: 3px solid #555;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        .control-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .control-bar label {
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .control-bar input[type="date"] {
+            padding: 5px;
+            font-size: 16px;
+            border: 1px solid #999;
+        }
+        .control-btn, .control-select {
+            padding: 6px 15px;
+            font-size: 14px;
+            background-color: #e0e0e0;
+            border: 1px solid #999;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .control-btn:hover {
+            background-color: #d0d0d0;
+        }
+        .control-select {
+            background-color: #fff;
+            padding: 5px 10px;
+        }
+
+        /* 登錄介面結構 - 修改為左右等高 */
+        .main-layout {
+            display: flex;
+            gap: 20px;
+            align-items: stretch; /* 讓左右兩側自動拉伸至相同高度 */
+            height: 445px; /* 設定合適的固定高度，讓右側按鈕完美融入 */
+        }
+        .left-panel {
+            flex: 1;
+            background: #fff;
+            border: 1px solid #ccc;
+            overflow-y: auto;
+            /* 移除了原本的 max-height，交由父層 height 控制 */
+        }
+        .student-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: center;
+        }
+        .student-table th {
+            background-color: #1abc9c; 
+            color: white;
+            padding: 8px;
+            border: 1px solid #ccc;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        .student-table td {
+            padding: 8px;
+            border: 1px solid #eee;
+            cursor: pointer;
+        }
+        .student-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .student-table tr.selected td {
+            background-color: #4a6b82;
+            color: white;
+            font-weight: bold;
+        }
+        .right-panel {
+            width: 250px;
+            background: #e9e9e9;
+            padding: 15px;
+            border: 1px solid #ccc;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            box-sizing: border-box; /* 確保 padding 不會讓元素撐破高度 */
+            overflow-y: auto; /* 預防螢幕縮放時按鈕區被截斷 */
+        }
+        .right-panel-title {
+            font-size: 14px;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        .status-btn {
+            width: 100%;
+            padding: 12px;
+            background-color: #f4f4f4;
+            border: 1px solid #999;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: 0.2s;
+        }
+        .status-btn:hover {
+            background-color: #e0e0e0;
+        }
+        .clear-btn {
+            background-color: #dc3545;
+            color: white;
+            border: 1px solid #c82333;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        .clear-btn:hover {
+            background-color: #c82333;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+            background: #fff;
+            border: 1px solid #ccc;
+        }
+        .view-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .view-table th, .view-table td {
+            border: 1px solid #ddd;
+            padding: 10px 8px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .view-table th {
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer; 
+            user-select: none;
+        }
+        .view-table th:hover {
+            background-color: #45a049;
+        }
+        .view-table tr:nth-child(even) {background-color: #f9f9f9;}
+        
+        .sort-icon {
+            font-size: 12px;
+            margin-left: 5px;
+            display: inline-block;
+        }
+        
+        .action-btn-small {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            color: white;
+            font-size: 13px;
+            margin-right: 5px;
+        }
+        .edit-btn { background-color: #007bff; }
+        .edit-btn:hover { background-color: #0056b3; }
+        .del-btn { background-color: #dc3545; }
+        .del-btn:hover { background-color: #c82333; }
+
+        .loading-text, .msg-text {
+            text-align: center;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .modal {
+            display: none; 
+            position: fixed; 
+            z-index: 100; 
+            left: 0;
+            top: 0;
+            width: 100%; 
+            height: 100%; 
+            background-color: rgba(0,0,0,0.5); 
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background-color: #fefefe;
+            padding: 20px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 400px;
+        }
+        .modal textarea {
+            width: 100%;
+            height: 150px;
+            box-sizing: border-box;
+            margin: 10px 0;
+        }
+
+        /* 手機版響應式設計 */
+        @media (max-width: 768px) {
+            .main-layout {
+                flex-direction: column;
+                height: auto; /* 手機版解除固定高度 */
+            }
+            .right-panel {
+                width: 100%;
+                box-sizing: border-box;
+                position: sticky;
+                bottom: 0;
+                box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+            }
+            .left-panel {
+                width: 100%;
+                height: 45vh; /* 手機版恢復用 vh 控制高度 */
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="tabs">
+        <button class="tab-btn active" id="tabAdd">📝 紀錄出缺席</button>
+        <button class="tab-btn" id="tabView">📊 檢視歷史紀錄</button>
+    </div>
+
+    <!-- 區塊 1：打卡與狀態介面 -->
+    <div id="sectionAdd" class="tab-content active">
+        <div class="control-bar">
+            <label>📅 日期：<input type="date" id="targetDate"></label>
+            <button class="control-btn" id="openModalBtn">📄 選取 (匯入名單)</button>
+            <button class="control-btn" id="syncTodayBtn">🔄 重新整理</button>
+            <span id="quickMsg" class="msg-text" style="color: green; margin-left: auto;"></span>
+        </div>
+
+        <div class="main-layout">
+            <div class="left-panel">
+                <table class="student-table" id="studentTable">
+                    <thead>
+                        <tr>
+                            <th width="20%">座號</th>
+                            <th width="30%">姓名</th>
+                            <th width="50%">當日狀態</th>
+                        </tr>
+                    </thead>
+                    <tbody id="studentListBody">
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="right-panel">
+                <div class="right-panel-title">設定狀態 (請先點選左側名單)</div>
+                <button class="status-btn" onclick="setStatus('病假')">病假</button>
+                <button class="status-btn" onclick="setStatus('事假')">事假</button>
+                <button class="status-btn" onclick="setStatus('公假')">公假</button>
+                <button class="status-btn" onclick="setStatus('喪假')">喪假</button>
+                <button class="status-btn" onclick="setStatus('生理假')">生理假</button>
+                <button class="status-btn" onclick="setStatus('曠課')">曠課</button>
+                <button class="status-btn clear-btn" onclick="setStatus('銷假')">❌ 銷假 / 清除狀態</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 區塊 2：檢視所有歷史紀錄 -->
+    <div id="sectionView" class="tab-content">
+        <div class="control-bar">
+            <button class="control-btn" id="refreshHistoryBtn">🔄 載入歷史資料</button>
+            <select id="filterStudent" class="control-select" style="margin-left: auto;">
+                <option value="">📂 顯示全部學生</option>
+            </select>
+        </div>
+        <div id="loadingMsg" class="loading-text" style="display: none;">資料載入中，請稍候...</div>
+        <div class="table-responsive">
+            <table class="view-table" id="recordsTable" style="display: none;">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable(0)">日期 <span class="sort-icon"></span></th>
+                        <th onclick="sortTable(1)">座號 <span class="sort-icon"></span></th>
+                        <th onclick="sortTable(2)">姓名 <span class="sort-icon"></span></th>
+                        <th onclick="sortTable(3)">假別 <span class="sort-icon"></span></th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="recordsBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 匯入名單 Modal -->
+<div id="importModal" class="modal">
+    <div class="modal-content">
+        <h3>匯入班級名單</h3>
+        <p style="font-size: 13px; color: #666;">格式：「座號」與「姓名」中間有空格或 Tab (可貼上多行)。</p>
+        <textarea id="studentListInput" placeholder="範例：&#10;1 王小明&#10;2 李小華"></textarea>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button class="control-btn" id="saveListBtn" style="flex:1; background-color: #4CAF50; color: white;">儲存</button>
+            <button class="control-btn" id="closeModalBtn" style="flex:1;">關閉</button>
+        </div>
+    </div>
+</div>
+
+<!-- 編輯紀錄 Modal -->
+<div id="editModal" class="modal">
+    <div class="modal-content">
+        <h3>編輯紀錄</h3>
+        <input type="hidden" id="editRowIdx">
+        <div style="margin-bottom: 15px;">
+            <label style="display:block; margin-bottom:5px; font-weight:bold;">學生：</label>
+            <span id="editStudentLabel"></span>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display:block; margin-bottom:5px; font-weight:bold;">日期：</label>
+            <input type="date" id="editDate" class="control-select" style="width: 100%; box-sizing:border-box;">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display:block; margin-bottom:5px; font-weight:bold;">假別：</label>
+            <select id="editLeaveType" class="control-select" style="width: 100%; box-sizing:border-box;">
+                <option value="病假">病假</option>
+                <option value="事假">事假</option>
+                <option value="公假">公假</option>
+                <option value="喪假">喪假</option>
+                <option value="生理假">生理假</option>
+                <option value="曠課">曠課</option>
+            </select>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button class="control-btn" id="saveEditBtn" style="flex:1; background-color: #007bff; color: white;">儲存修改</button>
+            <button class="control-btn" onclick="document.getElementById('editModal').style.display='none'" style="flex:1;">取消</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const scriptURL = 'https://script.google.com/macros/s/AKfycbx4v-TXXzNVWdZ4K20eySuILg21RXM5LOYEk77JuDdGxBdbzYg_T60S-PSPQ3GNjiPrTQ/exec';
+    let students = []; 
+    let selectedStudent = null; 
+    let currentSyncId = 0; 
+    let historyData = []; 
+    
+    let currentSortCol = 0; 
+    let sortAsc = true;      
+    const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    const dateInput = document.getElementById('targetDate');
+    const studentListBody = document.getElementById('studentListBody');
+    const quickMsg = document.getElementById('quickMsg');
+
+    document.addEventListener("DOMContentLoaded", () => {
+        dateInput.valueAsDate = new Date(); 
+        loadStudentsFromLocal();
+        syncTodayData(); 
+    });
+
+    document.getElementById('tabAdd').addEventListener('click', function() {
+        this.classList.add('active');
+        document.getElementById('tabView').classList.remove('active');
+        document.getElementById('sectionAdd').classList.add('active');
+        document.getElementById('sectionView').classList.remove('active');
+        syncTodayData(); 
+    });
+
+    document.getElementById('tabView').addEventListener('click', function() {
+        this.classList.add('active');
+        document.getElementById('tabAdd').classList.remove('active');
+        document.getElementById('sectionView').classList.add('active');
+        document.getElementById('sectionAdd').classList.remove('active');
+        loadHistoryData();
+    });
+
+    function loadStudentsFromLocal() {
+        const storedList = localStorage.getItem('classStudentList');
+        if (storedList) {
+            students = JSON.parse(storedList);
+            document.getElementById('studentListInput').value = students.map(s => `${s.seat}\t${s.name}`).join('\n');
+            updateFilterOptions(); 
+        }
+        renderStudentTable();
+    }
+
+    function renderStudentTable() {
+        studentListBody.innerHTML = '';
+        if (students.length === 0) {
+            studentListBody.innerHTML = '<tr><td colspan="3">請先點擊上方「選取」匯入名單</td></tr>';
+            return;
+        }
+
+        students.forEach(student => {
+            const tr = document.createElement('tr');
+            tr.dataset.seat = student.seat;
+            tr.dataset.name = student.name;
+            tr.innerHTML = `
+                <td>${student.seat}</td>
+                <td>${student.name}</td>
+                <td class="status-cell"></td>
+            `;
+            tr.addEventListener('click', function() {
+                document.querySelectorAll('.student-table tr').forEach(row => row.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedStudent = { seat: this.dataset.seat, name: this.dataset.name, element: this };
+            });
+            studentListBody.appendChild(tr);
+        });
+        selectedStudent = null; 
+    }
+
+    function setStatus(leaveType) {
+        if (!selectedStudent) {
+            showMsg('請先從左側名單點選學生！', 'red');
+            return;
+        }
+
+        const dateVal = dateInput.value;
+        const seat = selectedStudent.seat;
+        const name = selectedStudent.name;
+        const rowEl = selectedStudent.element;
+        
+        if (leaveType === '銷假') {
+            showMsg('清除紀錄中...', 'blue');
+            fetch(scriptURL)
+                .then(res => res.json())
+                .then(async (result) => {
+                    if (result.status === 'success') {
+                        let rowsToDelete = [];
+                        for (let i = result.data.length - 1; i >= 0; i--) {
+                            let rowDate = result.data[i][1];
+                            let rowSeat = result.data[i][2];
+                            if (rowDate === '日期' || rowSeat === '座號' || rowSeat === '學號') continue;
+
+                            if (rowDate && isSameDate(rowDate, dateVal) && parseInt(rowSeat) === parseInt(seat)) {
+                                rowsToDelete.push(i + 1); 
+                            }
+                        }
+                        
+                        if (rowsToDelete.length > 0) {
+                            rowsToDelete.sort((a, b) => b - a); 
+                            for (let rowIdx of rowsToDelete) {
+                                await fetch(scriptURL, {
+                                    method: 'POST',
+                                    body: JSON.stringify({ action: 'delete', row: rowIdx }),
+                                    headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+                                });
+                            }
+                            showMsg(`已清除 ${name} 當日紀錄`, 'green');
+                        } else {
+                            showMsg(`當日無 ${name} 的紀錄`, 'green');
+                        }
+                        
+                        const statusCell = rowEl.querySelector('.status-cell');
+                        statusCell.textContent = ''; 
+                        
+                        const nextRow = rowEl.nextElementSibling;
+                        if(nextRow) {
+                            nextRow.click();
+                            nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        }
+                    } else {
+                        showMsg('清除失敗', 'red');
+                    }
+                })
+                .catch(err => showMsg('網路錯誤', 'red'));
+            return;
+        }
+
+        showMsg('傳送中...', 'blue');
+        const data = { action: 'add', date: dateVal, studentId: seat, studentName: name, leaveType: leaveType, note: '' };
+
+        fetch(scriptURL, {
+            method: 'POST',
+            body: JSON.stringify(data),
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                showMsg(`已更新 ${name} 為：${leaveType}`, 'green');
+                const statusCell = rowEl.querySelector('.status-cell');
+                statusCell.textContent = leaveType;
+                
+                const nextRow = rowEl.nextElementSibling;
+                if(nextRow) {
+                    nextRow.click();
+                    nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            } else {
+                showMsg('紀錄失敗，請重試。', 'red');
+            }
+        })
+        .catch(error => showMsg('傳送失敗(網路錯誤)', 'red'));
+    }
+
+    function isSameDate(dateStr1, dateStr2) {
+        if (!dateStr1 || !dateStr2 || dateStr1.trim() === '' || dateStr2.trim() === '') return false;
+        const d1 = new Date(dateStr1.replace(/-/g, '/'));
+        const d2 = new Date(dateStr2.replace(/-/g, '/'));
+        if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return false;
+        return d1.getFullYear() === d2.getFullYear() &&
+               d1.getMonth() === d2.getMonth() &&
+               d1.getDate() === d2.getDate();
+    }
+
+    function formatFullDate(dateStr) {
+        if (!dateStr || dateStr.trim() === '') return '';
+        const d = new Date(dateStr.replace(/-/g, '/'));
+        if (isNaN(d.getTime())) return dateStr;
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const day = daysOfWeek[d.getDay()];
+        return `${yyyy}-${mm}-${dd} ${day}`;
+    }
+
+    document.getElementById('syncTodayBtn').addEventListener('click', syncTodayData);
+    dateInput.addEventListener('change', () => {
+        document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
+        syncTodayData();
+    });
+
+    function syncTodayData() {
+        const targetD = dateInput.value;
+        const syncId = ++currentSyncId; 
+        
+        document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
+        showMsg('同步資料中...', 'blue');
+
+        fetch(scriptURL)
+            .then(response => response.json())
+            .then(result => {
+                if (syncId !== currentSyncId) return; 
+
+                if (result.status === 'success' && result.data.length > 0) {
+                    const dataRows = result.data;
+                    const latestStatus = {};
+                    
+                    dataRows.forEach(row => {
+                        const rDate = row[1] || '';
+                        const rSeat = row[2] || '';
+                        const rType = row[4] || '';
+                        
+                        if (rDate === '日期' || rSeat === '座號' || rSeat === '學號') return;
+
+                        if (rDate.trim() !== '' && isSameDate(rDate, targetD) && rType !== '銷假') {
+                            latestStatus[rSeat] = rType;
+                        }
+                    });
+
+                    document.querySelectorAll('.student-table tbody tr').forEach(tr => {
+                        const seat = tr.dataset.seat;
+                        if (latestStatus[seat]) {
+                            const type = latestStatus[seat];
+                            tr.querySelector('.status-cell').textContent = type;
+                        }
+                    });
+                    showMsg('資料已同步', 'green');
+                } else {
+                    showMsg('', 'black');
+                }
+            })
+            .catch(error => {
+                if (syncId === currentSyncId) showMsg('同步失敗', 'red');
+            });
+    }
+
+    function showMsg(text, color) {
+        quickMsg.textContent = text;
+        quickMsg.style.color = color;
+        setTimeout(() => { if(quickMsg.textContent === text) quickMsg.textContent = ''; }, 3000);
+    }
+
+    const importModal = document.getElementById('importModal');
+    document.getElementById('openModalBtn').addEventListener('click', () => importModal.style.display = 'flex');
+    document.getElementById('closeModalBtn').addEventListener('click', () => importModal.style.display = 'none');
+
+    document.getElementById('saveListBtn').addEventListener('click', () => {
+        const lines = document.getElementById('studentListInput').value.trim().split('\n');
+        let newList = [];
+        lines.forEach(line => {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 2) {
+                newList.push({ seat: parts[0], name: parts.slice(1).join(' ') });
+            }
+        });
+
+        if (newList.length > 0) {
+            students = newList;
+            localStorage.setItem('classStudentList', JSON.stringify(students));
+            loadStudentsFromLocal();
+            syncTodayData();
+            importModal.style.display = 'none';
+        } else {
+            alert('格式錯誤，無法匯入');
+        }
+    });
+
+    document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistoryData);
+    document.getElementById('filterStudent').addEventListener('change', renderHistoryTable);
+
+    function updateFilterOptions() {
+        const filterSelect = document.getElementById('filterStudent');
+        const currentVal = filterSelect.value;
+        filterSelect.innerHTML = '<option value="">📂 顯示全部學生</option>';
+        
+        students.forEach(student => {
+            const opt = document.createElement('option');
+            opt.value = student.name;
+            opt.textContent = `${student.seat}號 - ${student.name}`;
+            filterSelect.appendChild(opt);
+        });
+        filterSelect.value = currentVal || '';
+    }
+
+    function toggleLoading(isLoading) {
+        const loadingMsg = document.getElementById('loadingMsg');
+        const recordsTable = document.getElementById('recordsTable');
+        if(isLoading) {
+            recordsTable.style.display = 'none';
+            loadingMsg.style.display = 'block';
+        } else {
+            loadingMsg.style.display = 'none';
+            recordsTable.style.display = 'table';
+        }
+    }
+
+    function loadHistoryData() {
+        toggleLoading(true);
+        const recordsBody = document.getElementById('recordsBody');
+        recordsBody.innerHTML = '';
+
+        fetch(scriptURL)
+            .then(response => response.json())
+            .then(result => {
+                toggleLoading(false);
+                if (result.status === 'success' && result.data.length > 0) {
+                    let validData = [];
+                    for (let i = 0; i < result.data.length; i++) {
+                        let row = result.data[i];
+                        
+                        if (row[1] === '日期' || row[2] === '座號' || row[2] === '學號') continue;
+
+                        if (!row[1] || !row[3] || row[1].trim() === '' || row[3].trim() === '' || row[4] === '銷假') {
+                            continue;
+                        }
+                        
+                        validData.push({
+                            rowIdx: i + 1, 
+                            rawDate: row[1] || '',
+                            displayDate: formatFullDate(row[1]),
+                            seat: parseInt(row[2]) || 0,
+                            name: row[3] || '',
+                            type: row[4] || ''
+                        });
+                    }
+                    
+                    historyData = validData;
+                    renderHistoryTable();
+                } else {
+                    recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">尚無紀錄</td></tr>';
+                }
+            })
+            .catch(error => {
+                toggleLoading(false);
+                document.getElementById('recordsBody').innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">載入失敗</td></tr>';
+            });
+    }
+
+    function sortTable(colIndex) {
+        if (currentSortCol === colIndex) {
+            sortAsc = !sortAsc; 
+        } else {
+            currentSortCol = colIndex;
+            sortAsc = true;     
+        }
+        renderHistoryTable();
+    }
+
+    function renderHistoryTable() {
+        let filteredData = [...historyData];
+        const filterVal = document.getElementById('filterStudent').value;
+
+        if (filterVal) {
+            filteredData = filteredData.filter(item => item.name === filterVal);
+        }
+
+        if (currentSortCol !== -1) {
+            filteredData.sort((a, b) => {
+                let valA, valB;
+                if (currentSortCol === 0) {
+                    valA = new Date(a.rawDate.replace(/-/g, '/')).getTime();
+                    valB = new Date(b.rawDate.replace(/-/g, '/')).getTime();
+                } else if (currentSortCol === 1) {
+                    valA = a.seat; valB = b.seat;
+                } else if (currentSortCol === 2) {
+                    valA = a.name; valB = b.name;
+                } else if (currentSortCol === 3) {
+                    valA = a.type; valB = b.type;
+                }
+
+                if (valA !== valB) {
+                    if (valA < valB) return sortAsc ? -1 : 1;
+                    if (valA > valB) return sortAsc ? 1 : -1;
+                }
+                
+                return a.seat - b.seat;
+            });
+        }
+
+        const recordsBody = document.getElementById('recordsBody');
+        recordsBody.innerHTML = '';
+
+        if (filteredData.length === 0) {
+            recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">無符合條件的紀錄</td></tr>';
+        } else {
+            filteredData.forEach(item => {
+                recordsBody.innerHTML += `
+                    <tr>
+                        <td>${item.displayDate}</td>
+                        <td>${item.seat}</td>
+                        <td>${item.name}</td>
+                        <td>${item.type}</td>
+                        <td>
+                            <button class="action-btn-small edit-btn" onclick="openEditModal(${item.rowIdx}, '${item.rawDate}', ${item.seat}, '${item.name}', '${item.type}')">編輯</button>
+                            <button class="action-btn-small del-btn" onclick="deleteRecord(${item.rowIdx}, '${item.name}', '${item.displayDate}')">刪除</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        document.querySelectorAll('.sort-icon').forEach((icon, idx) => {
+            if (idx === currentSortCol) {
+                icon.textContent = sortAsc ? '▲' : '▼';
+            } else {
+                icon.textContent = '';
+            }
+        });
+    }
+
+    function deleteRecord(rowIdx, studentName, displayDate) {
+        if (!confirm(`確定要刪除 ${studentName} 在 ${displayDate} 的紀錄嗎？\n(刪除後無法復原)`)) return;
+        
+        toggleLoading(true);
+        fetch(scriptURL, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'delete', row: rowIdx }),
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        })
+        .then(res => res.json())
+        .then(res => {
+            if (res.status === 'success') {
+                alert('刪除成功');
+                loadHistoryData(); 
+            } else {
+                alert('刪除失敗，請檢查後端是否已「建立新版本」');
+                toggleLoading(false);
+            }
+        })
+        .catch(err => {
+            alert('網路錯誤');
+            toggleLoading(false);
+        });
+    }
+
+    function openEditModal(rowIdx, dateStr, seat, name, type) {
+        document.getElementById('editRowIdx').value = rowIdx;
+        document.getElementById('editStudentLabel').textContent = `${seat}號 - ${name}`;
+        
+        let formattedDate = dateStr;
+        if(dateStr && dateStr.includes('/')) {
+            formattedDate = dateStr.replace(/\//g, '-');
+        }
+        document.getElementById('editDate').value = formattedDate;
+        document.getElementById('editLeaveType').value = type;
+        
+        document.getElementById('editModal').style.display = 'flex';
+    }
+
+    document.getElementById('saveEditBtn').addEventListener('click', () => {
+        const rowIdx = document.getElementById('editRowIdx').value;
+        const newDate = document.getElementById('editDate').value;
+        const newType = document.getElementById('editLeaveType').value;
+        
+        document.getElementById('editModal').style.display = 'none';
+        toggleLoading(true);
+
+        fetch(scriptURL, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'edit', row: rowIdx, date: newDate, leaveType: newType }),
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        })
+        .then(res => res.json())
+        .then(res => {
+            if (res.status === 'success') {
+                alert('修改成功');
+                loadHistoryData(); 
+            } else {
+                alert('修改失敗，請檢查後端是否已「建立新版本」');
+                toggleLoading(false);
+            }
+        })
+        .catch(err => {
+            alert('網路錯誤');
+            toggleLoading(false);
+        });
+    });
+</script>
+
+</body>
+</html>
