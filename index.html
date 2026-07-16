@@ -86,20 +86,26 @@
             background-color: #fff;
             padding: 5px 10px;
         }
+        .btn-blue {
+            background-color: #007bff;
+            color: white;
+            border: 1px solid #0056b3;
+        }
+        .btn-blue:hover {
+            background-color: #0056b3;
+        }
 
-        /* 登錄介面結構 - 修改為左右等高 */
         .main-layout {
             display: flex;
             gap: 20px;
-            align-items: stretch; /* 讓左右兩側自動拉伸至相同高度 */
-            height: 445px; /* 設定合適的固定高度，讓右側按鈕完美融入 */
+            align-items: stretch; 
+            height: 445px; 
         }
         .left-panel {
             flex: 1;
             background: #fff;
             border: 1px solid #ccc;
             overflow-y: auto;
-            /* 移除了原本的 max-height，交由父層 height 控制 */
         }
         .student-table {
             width: 100%;
@@ -136,8 +142,8 @@
             display: flex;
             flex-direction: column;
             gap: 10px;
-            box-sizing: border-box; /* 確保 padding 不會讓元素撐破高度 */
-            overflow-y: auto; /* 預防螢幕縮放時按鈕區被截斷 */
+            box-sizing: border-box; 
+            overflow-y: auto; 
         }
         .right-panel-title {
             font-size: 14px;
@@ -240,18 +246,11 @@
             width: 90%;
             max-width: 400px;
         }
-        .modal textarea {
-            width: 100%;
-            height: 150px;
-            box-sizing: border-box;
-            margin: 10px 0;
-        }
 
-        /* 手機版響應式設計 */
         @media (max-width: 768px) {
             .main-layout {
                 flex-direction: column;
-                height: auto; /* 手機版解除固定高度 */
+                height: auto; 
             }
             .right-panel {
                 width: 100%;
@@ -262,7 +261,7 @@
             }
             .left-panel {
                 width: 100%;
-                height: 45vh; /* 手機版恢復用 vh 控制高度 */
+                height: 45vh; 
             }
         }
     </style>
@@ -279,8 +278,8 @@
     <div id="sectionAdd" class="tab-content active">
         <div class="control-bar">
             <label>📅 日期：<input type="date" id="targetDate"></label>
-            <button class="control-btn" id="openModalBtn">📄 選取 (匯入名單)</button>
-            <button class="control-btn" id="syncTodayBtn">🔄 重新整理</button>
+            <button class="control-btn btn-blue" id="syncCloudRosterBtn">☁️ 從雲端同步名單</button>
+            <button class="control-btn" id="syncTodayBtn">🔄 重新整理紀錄</button>
             <span id="quickMsg" class="msg-text" style="color: green; margin-left: auto;"></span>
         </div>
 
@@ -339,19 +338,6 @@
     </div>
 </div>
 
-<!-- 匯入名單 Modal -->
-<div id="importModal" class="modal">
-    <div class="modal-content">
-        <h3>匯入班級名單</h3>
-        <p style="font-size: 13px; color: #666;">格式：「座號」與「姓名」中間有空格或 Tab (可貼上多行)。</p>
-        <textarea id="studentListInput" placeholder="範例：&#10;1 王小明&#10;2 李小華"></textarea>
-        <div style="display: flex; gap: 10px; margin-top: 10px;">
-            <button class="control-btn" id="saveListBtn" style="flex:1; background-color: #4CAF50; color: white;">儲存</button>
-            <button class="control-btn" id="closeModalBtn" style="flex:1;">關閉</button>
-        </div>
-    </div>
-</div>
-
 <!-- 編輯紀錄 Modal -->
 <div id="editModal" class="modal">
     <div class="modal-content">
@@ -401,7 +387,6 @@
     document.addEventListener("DOMContentLoaded", () => {
         dateInput.valueAsDate = new Date(); 
         loadStudentsFromLocal();
-        syncTodayData(); 
     });
 
     document.getElementById('tabAdd').addEventListener('click', function() {
@@ -420,20 +405,67 @@
         loadHistoryData();
     });
 
+    // --- 名單載入邏輯 ---
     function loadStudentsFromLocal() {
         const storedList = localStorage.getItem('classStudentList');
         if (storedList) {
             students = JSON.parse(storedList);
-            document.getElementById('studentListInput').value = students.map(s => `${s.seat}\t${s.name}`).join('\n');
+            renderStudentTable();
             updateFilterOptions(); 
+            syncTodayData();
+        } else {
+            // 如果本地沒有名單 (手機第一次開)，自動從雲端下載
+            loadStudentsFromCloud();
         }
-        renderStudentTable();
+    }
+
+    document.getElementById('syncCloudRosterBtn').addEventListener('click', loadStudentsFromCloud);
+
+    function loadStudentsFromCloud() {
+        showMsg('正在下載雲端名單...', 'blue');
+        // 發送帶有 action=getStudents 的請求
+        fetch(scriptURL + '?action=getStudents')
+            .then(res => res.json())
+            .then(result => {
+                if (result.status === 'success') {
+                    let newList = [];
+                    result.data.forEach(row => {
+                        const seat = row[0];
+                        const name = row[1];
+                        
+                        // 檢查是否有資料，並確實避開標題列 (座號/學號)
+                        if (seat && name) {
+                            const seatStr = String(seat).trim();
+                            const nameStr = String(name).trim();
+                            if (seatStr !== '座號' && seatStr !== '學號') {
+                                newList.push({ seat: seatStr, name: nameStr });
+                            }
+                        }
+                    });
+                    
+                    if (newList.length > 0) {
+                        students = newList;
+                        localStorage.setItem('classStudentList', JSON.stringify(students));
+                        renderStudentTable();
+                        updateFilterOptions();
+                        showMsg('名單同步成功！', 'green');
+                        syncTodayData(); // 下載完名單順便更新今日狀態
+                    } else {
+                        showMsg('「學生名單」沒有有效資料', 'red');
+                    }
+                } else {
+                    showMsg('讀取失敗: ' + (result.message || '未知錯誤'), 'red');
+                }
+            })
+            .catch(err => {
+                showMsg('下載名單失敗(網路錯誤)', 'red');
+            });
     }
 
     function renderStudentTable() {
         studentListBody.innerHTML = '';
         if (students.length === 0) {
-            studentListBody.innerHTML = '<tr><td colspan="3">請先點擊上方「選取」匯入名單</td></tr>';
+            studentListBody.innerHTML = '<tr><td colspan="3">請點擊「從雲端同步名單」</td></tr>';
             return;
         }
 
@@ -456,6 +488,7 @@
         selectedStudent = null; 
     }
 
+    // --- 狀態設定與發送 API ---
     function setStatus(leaveType) {
         if (!selectedStudent) {
             showMsg('請先從左側名單點選學生！', 'red');
@@ -618,31 +651,6 @@
         quickMsg.style.color = color;
         setTimeout(() => { if(quickMsg.textContent === text) quickMsg.textContent = ''; }, 3000);
     }
-
-    const importModal = document.getElementById('importModal');
-    document.getElementById('openModalBtn').addEventListener('click', () => importModal.style.display = 'flex');
-    document.getElementById('closeModalBtn').addEventListener('click', () => importModal.style.display = 'none');
-
-    document.getElementById('saveListBtn').addEventListener('click', () => {
-        const lines = document.getElementById('studentListInput').value.trim().split('\n');
-        let newList = [];
-        lines.forEach(line => {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length >= 2) {
-                newList.push({ seat: parts[0], name: parts.slice(1).join(' ') });
-            }
-        });
-
-        if (newList.length > 0) {
-            students = newList;
-            localStorage.setItem('classStudentList', JSON.stringify(students));
-            loadStudentsFromLocal();
-            syncTodayData();
-            importModal.style.display = 'none';
-        } else {
-            alert('格式錯誤，無法匯入');
-        }
-    });
 
     document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistoryData);
     document.getElementById('filterStudent').addEventListener('change', renderHistoryTable);
