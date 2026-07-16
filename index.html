@@ -163,6 +163,10 @@
         .status-btn:hover {
             background-color: #e0e0e0;
         }
+        .status-btn:disabled, .control-btn:disabled, .action-btn-small:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
         .clear-btn {
             background-color: #dc3545;
             color: white;
@@ -401,21 +405,62 @@
 
 <script>
     const scriptURL = 'https://script.google.com/macros/s/AKfycbx4v-TXXzNVWdZ4K20eySuILg21RXM5LOYEk77JuDdGxBdbzYg_T60S-PSPQ3GNjiPrTQ/exec';
-    let students = []; 
-    let selectedStudent = null; 
-    let currentSyncId = 0; 
-    let historyData = []; 
-    
-    let currentSortCol = 0; 
-    let sortAsc = true;      
+    let students = [];
+    let selectedStudent = null;
+    let currentSyncId = 0;
+    let historyData = [];
+    let isBusy = false; // 防止動作進行中被重複觸發
+
+    let currentSortCol = 0;
+    let sortAsc = true;
     const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    // --- 全表讀取快取（Apps Script 讀取較慢，短時間內共用結果，寫入後失效）---
+    let dataCache = null;
+    let dataCacheTime = 0;
+    const CACHE_TTL = 4000; // 毫秒
 
     const dateInput = document.getElementById('targetDate');
     const studentListBody = document.getElementById('studentListBody');
     const quickMsg = document.getElementById('quickMsg');
 
+    // --- 共用工具 ---
+    function escapeHtml(str) {
+        return String(str ?? '').replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function seatEquals(a, b) {
+        const sa = String(a).trim(), sb = String(b).trim();
+        if (sa === sb) return true;
+        const na = parseInt(sa, 10), nb = parseInt(sb, 10);
+        return !isNaN(na) && !isNaN(nb) && na === nb;
+    }
+
+    function setBusy(state) {
+        isBusy = state;
+        document.querySelectorAll('.status-btn, .action-btn-small').forEach(b => b.disabled = state);
+    }
+
+    // 讀取整張表（含快取）；force=true 強制重抓
+    async function fetchAllData(force = false) {
+        const now = Date.now();
+        if (!force && dataCache && (now - dataCacheTime) < CACHE_TTL) {
+            return dataCache;
+        }
+        const res = await fetch(scriptURL);
+        const result = await res.json();
+        if (result.status === 'success') {
+            dataCache = result;
+            dataCacheTime = Date.now();
+        }
+        return result;
+    }
+    function invalidateCache() { dataCache = null; }
+
     document.addEventListener("DOMContentLoaded", () => {
-        dateInput.valueAsDate = new Date(); 
+        dateInput.valueAsDate = new Date();
         loadStudentsFromLocal();
     });
 
@@ -424,7 +469,7 @@
         document.getElementById('tabView').classList.remove('active');
         document.getElementById('sectionAdd').classList.add('active');
         document.getElementById('sectionView').classList.remove('active');
-        syncTodayData(); 
+        syncTodayData();
     });
 
     document.getElementById('tabView').addEventListener('click', function() {
@@ -439,9 +484,13 @@
     function loadStudentsFromLocal() {
         const storedList = localStorage.getItem('classStudentList');
         if (storedList) {
-            students = JSON.parse(storedList);
+            try {
+                students = JSON.parse(storedList);
+            } catch (e) {
+                students = [];
+            }
             renderStudentTable();
-            updateFilterOptions(); 
+            updateFilterOptions();
             syncTodayData();
         } else {
             loadStudentsFromCloud();
@@ -460,7 +509,6 @@
                     result.data.forEach(row => {
                         const seat = row[0];
                         const name = row[1];
-                        
                         if (seat && name) {
                             const seatStr = String(seat).trim();
                             const nameStr = String(name).trim();
@@ -469,14 +517,14 @@
                             }
                         }
                     });
-                    
+
                     if (newList.length > 0) {
                         students = newList;
                         localStorage.setItem('classStudentList', JSON.stringify(students));
                         renderStudentTable();
                         updateFilterOptions();
                         showMsg('名單同步成功！', 'green');
-                        syncTodayData(); 
+                        syncTodayData();
                     } else {
                         showMsg('「學生名單」沒有有效資料', 'red');
                     }
@@ -500,11 +548,18 @@
             const tr = document.createElement('tr');
             tr.dataset.seat = student.seat;
             tr.dataset.name = student.name;
-            tr.innerHTML = `
-                <td>${student.seat}</td>
-                <td>${student.name}</td>
-                <td class="status-cell"></td>
-            `;
+
+            const tdSeat = document.createElement('td');
+            tdSeat.textContent = student.seat;
+            const tdName = document.createElement('td');
+            tdName.textContent = student.name;
+            const tdStatus = document.createElement('td');
+            tdStatus.className = 'status-cell';
+
+            tr.appendChild(tdSeat);
+            tr.appendChild(tdName);
+            tr.appendChild(tdStatus);
+
             tr.addEventListener('click', function() {
                 document.querySelectorAll('.student-table tr').forEach(row => row.classList.remove('selected'));
                 this.classList.add('selected');
@@ -512,11 +567,20 @@
             });
             studentListBody.appendChild(tr);
         });
-        selectedStudent = null; 
+        selectedStudent = null;
     }
 
-    // --- 狀態設定與發送 API ---
-    function setStatus(leaveType) {
+    function goToNextRow(rowEl) {
+        const nextRow = rowEl.nextElementSibling;
+        if (nextRow) {
+            nextRow.click();
+            nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+
+    // --- 狀態設定與發送 API（後端已支援 upsert 與批次清除，前端一次請求即可）---
+    async function setStatus(leaveType) {
+        if (isBusy) return; // 防連點
         if (!selectedStudent) {
             showMsg('請先從左側名單點選學生！', 'red');
             return;
@@ -526,85 +590,61 @@
         const seat = selectedStudent.seat;
         const name = selectedStudent.name;
         const rowEl = selectedStudent.element;
-        
-        if (leaveType === '銷假') {
-            showMsg('清除紀錄中...', 'blue');
-            fetch(scriptURL)
-                .then(res => res.json())
-                .then(async (result) => {
-                    if (result.status === 'success') {
-                        let rowsToDelete = [];
-                        for (let i = result.data.length - 1; i >= 0; i--) {
-                            let rowDate = result.data[i][1];
-                            let rowSeat = result.data[i][2];
-                            if (rowDate === '日期' || rowSeat === '座號' || rowSeat === '學號') continue;
+        const statusCell = rowEl.querySelector('.status-cell');
 
-                            if (rowDate && isSameDate(rowDate, dateVal) && parseInt(rowSeat) === parseInt(seat)) {
-                                rowsToDelete.push(i + 1); 
-                            }
-                        }
-                        
-                        if (rowsToDelete.length > 0) {
-                            rowsToDelete.sort((a, b) => b - a); 
-                            for (let rowIdx of rowsToDelete) {
-                                await fetch(scriptURL, {
-                                    method: 'POST',
-                                    body: JSON.stringify({ action: 'delete', row: rowIdx }),
-                                    headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-                                });
-                            }
-                            showMsg(`已清除 ${name} 當日紀錄`, 'green');
-                        } else {
-                            showMsg(`當日無 ${name} 的紀錄`, 'green');
-                        }
-                        
-                        const statusCell = rowEl.querySelector('.status-cell');
-                        statusCell.textContent = ''; 
-                        
-                        const nextRow = rowEl.nextElementSibling;
-                        if(nextRow) {
-                            nextRow.click();
-                            nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        }
-                    } else {
-                        showMsg('清除失敗', 'red');
-                    }
-                })
-                .catch(err => showMsg('網路錯誤', 'red'));
-            return;
-        }
-
-        showMsg('傳送中...', 'blue');
-        const data = { action: 'add', date: dateVal, studentId: seat, studentName: name, leaveType: leaveType, note: '' };
-
-        fetch(scriptURL, {
-            method: 'POST',
-            body: JSON.stringify(data),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-        })
-        .then(response => response.json())
-        .then(result => {
-            if (result.status === 'success') {
-                showMsg(`已更新 ${name} 為：${leaveType}`, 'green');
-                const statusCell = rowEl.querySelector('.status-cell');
-                statusCell.textContent = leaveType;
-                
-                const nextRow = rowEl.nextElementSibling;
-                if(nextRow) {
-                    nextRow.click();
-                    nextRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        setBusy(true);
+        try {
+            // 銷假：呼叫後端批次清除，一次請求刪掉當日該生所有紀錄
+            if (leaveType === '銷假') {
+                showMsg('清除紀錄中...', 'blue');
+                const res = await fetch(scriptURL, {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'deleteByStudentDate', date: dateVal, studentId: seat }),
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+                });
+                const result = await res.json();
+                if (result.status === 'success') {
+                    invalidateCache();
+                    const n = result.deleted || 0;
+                    showMsg(n > 0 ? `已清除 ${name} 當日紀錄` : `當日無 ${name} 的紀錄`, 'green');
+                    statusCell.textContent = '';
+                    goToNextRow(rowEl);
+                } else {
+                    showMsg('清除失敗', 'red');
                 }
+                return;
+            }
+
+            // 一般假別：後端會自動 upsert（同日同座號存在就更新、否則新增），前端只送一次
+            showMsg('傳送中...', 'blue');
+            const res = await fetch(scriptURL, {
+                method: 'POST',
+                body: JSON.stringify({ action: 'add', date: dateVal, studentId: seat, studentName: name, leaveType: leaveType, note: '' }),
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+            });
+            const result = await res.json();
+
+            if (result.status === 'success') {
+                invalidateCache();
+                showMsg(`已更新 ${name} 為：${leaveType}`, 'green');
+                statusCell.textContent = leaveType;
+                goToNextRow(rowEl);
             } else {
                 showMsg('紀錄失敗，請重試。', 'red');
             }
-        })
-        .catch(error => showMsg('傳送失敗(網路錯誤)', 'red'));
+        } catch (error) {
+            showMsg('傳送失敗(網路錯誤)', 'red');
+        } finally {
+            setBusy(false);
+        }
     }
 
     function isSameDate(dateStr1, dateStr2) {
-        if (!dateStr1 || !dateStr2 || dateStr1.trim() === '' || dateStr2.trim() === '') return false;
-        const d1 = new Date(dateStr1.replace(/-/g, '/'));
-        const d2 = new Date(dateStr2.replace(/-/g, '/'));
+        if (!dateStr1 || !dateStr2) return false;
+        const s1 = String(dateStr1).trim(), s2 = String(dateStr2).trim();
+        if (s1 === '' || s2 === '') return false;
+        const d1 = new Date(s1.replace(/-/g, '/'));
+        const d2 = new Date(s2.replace(/-/g, '/'));
         if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return false;
         return d1.getFullYear() === d2.getFullYear() &&
                d1.getMonth() === d2.getMonth() &&
@@ -612,14 +652,29 @@
     }
 
     function formatFullDate(dateStr) {
-        if (!dateStr || dateStr.trim() === '') return '';
-        const d = new Date(dateStr.replace(/-/g, '/'));
-        if (isNaN(d.getTime())) return dateStr;
+        if (!dateStr) return '';
+        const s = String(dateStr).trim();
+        if (s === '') return '';
+        const d = new Date(s.replace(/-/g, '/'));
+        if (isNaN(d.getTime())) return s;
         const yyyy = d.getFullYear();
         const mm = String(d.getMonth() + 1).padStart(2, '0');
         const dd = String(d.getDate()).padStart(2, '0');
         const day = daysOfWeek[d.getDay()];
         return `${yyyy}-${mm}-${dd} ${day}`;
+    }
+
+    // 統一把各種日期格式轉成 <input type="date"> 需要的 yyyy-mm-dd
+    function toInputDate(dateStr) {
+        if (!dateStr) return '';
+        const d = new Date(String(dateStr).replace(/-/g, '/'));
+        if (!isNaN(d.getTime())) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+        return String(dateStr).slice(0, 10).replace(/\//g, '-');
     }
 
     document.getElementById('syncTodayBtn').addEventListener('click', syncTodayData);
@@ -628,65 +683,68 @@
         syncTodayData();
     });
 
-    function syncTodayData() {
+    async function syncTodayData() {
         const targetD = dateInput.value;
-        const syncId = ++currentSyncId; 
-        
+        const syncId = ++currentSyncId;
+
         document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
         showMsg('同步資料中...', 'blue');
 
-        fetch(scriptURL)
-            .then(response => response.json())
-            .then(result => {
-                if (syncId !== currentSyncId) return; 
+        try {
+            const result = await fetchAllData();
+            if (syncId !== currentSyncId) return; // 已有更新的同步，放棄本次
 
-                if (result.status === 'success' && result.data.length > 0) {
-                    const dataRows = result.data;
-                    const latestStatus = {};
-                    
-                    dataRows.forEach(row => {
-                        const rDate = row[1] || '';
-                        const rSeat = row[2] || '';
-                        const rType = row[4] || '';
-                        
-                        if (rDate === '日期' || rSeat === '座號' || rSeat === '學號') return;
+            if (result.status === 'success' && result.data.length > 0) {
+                const latestStatus = {};
+                result.data.forEach(row => {
+                    const rDate = row[1] || '';
+                    const rSeat = row[2] || '';
+                    const rType = row[4] || '';
+                    if (rDate === '日期' || rSeat === '座號' || rSeat === '學號') return;
+                    if (String(rDate).trim() !== '' && isSameDate(rDate, targetD) && rType !== '銷假') {
+                        latestStatus[rSeat] = rType;
+                    }
+                });
 
-                        if (rDate.trim() !== '' && isSameDate(rDate, targetD) && rType !== '銷假') {
-                            latestStatus[rSeat] = rType;
-                        }
-                    });
-
-                    document.querySelectorAll('.student-table tbody tr').forEach(tr => {
-                        const seat = tr.dataset.seat;
-                        if (latestStatus[seat]) {
-                            const type = latestStatus[seat];
-                            tr.querySelector('.status-cell').textContent = type;
-                        }
-                    });
-                    showMsg('資料已同步', 'green');
-                } else {
-                    showMsg('', 'black');
-                }
-            })
-            .catch(error => {
-                if (syncId === currentSyncId) showMsg('同步失敗', 'red');
-            });
+                document.querySelectorAll('.student-table tbody tr').forEach(tr => {
+                    const seat = tr.dataset.seat;
+                    const cell = tr.querySelector('.status-cell');
+                    if (cell) cell.textContent = latestStatus[seat] || '';
+                });
+                showMsg('資料已同步', 'green');
+            } else {
+                showMsg('', 'black');
+            }
+        } catch (error) {
+            if (syncId === currentSyncId) showMsg('同步失敗', 'red');
+        }
     }
 
     function showMsg(text, color) {
         quickMsg.textContent = text;
         quickMsg.style.color = color;
-        setTimeout(() => { if(quickMsg.textContent === text) quickMsg.textContent = ''; }, 3000);
+        setTimeout(() => { if (quickMsg.textContent === text) quickMsg.textContent = ''; }, 3000);
     }
 
     document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistoryData);
     document.getElementById('filterStudent').addEventListener('change', renderHistoryTable);
 
+    // 事件委派：編輯 / 刪除按鈕（取代原本內嵌 onclick 字串，避免姓名含特殊字元造成注入或壞掉）
+    document.getElementById('recordsBody').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        if (btn.dataset.action === 'edit') {
+            openEditModal(btn.dataset.row, btn.dataset.date, btn.dataset.seat, btn.dataset.name, btn.dataset.type);
+        } else if (btn.dataset.action === 'delete') {
+            deleteRecord(btn.dataset.row, btn.dataset.name, btn.dataset.display);
+        }
+    });
+
     function updateFilterOptions() {
         const filterSelect = document.getElementById('filterStudent');
         const currentVal = filterSelect.value;
         filterSelect.innerHTML = '<option value="">📂 顯示全部學生</option>';
-        
+
         students.forEach(student => {
             const opt = document.createElement('option');
             opt.value = student.name;
@@ -699,7 +757,7 @@
     function toggleLoading(isLoading) {
         const loadingMsg = document.getElementById('loadingMsg');
         const recordsTable = document.getElementById('recordsTable');
-        if(isLoading) {
+        if (isLoading) {
             recordsTable.style.display = 'none';
             loadingMsg.style.display = 'block';
         } else {
@@ -713,23 +771,21 @@
         const recordsBody = document.getElementById('recordsBody');
         recordsBody.innerHTML = '';
 
-        fetch(scriptURL)
-            .then(response => response.json())
+        fetchAllData(true)
             .then(result => {
                 toggleLoading(false);
                 if (result.status === 'success' && result.data.length > 0) {
                     let validData = [];
                     for (let i = 0; i < result.data.length; i++) {
                         let row = result.data[i];
-                        
-                        if (row[1] === '日期' || row[2] === '座號' || row[2] === '學號') continue;
 
-                        if (!row[1] || !row[3] || row[1].trim() === '' || row[3].trim() === '' || row[4] === '銷假') {
+                        if (row[1] === '日期' || row[2] === '座號' || row[2] === '學號') continue;
+                        if (!row[1] || !row[3] || String(row[1]).trim() === '' || String(row[3]).trim() === '' || row[4] === '銷假') {
                             continue;
                         }
-                        
+
                         validData.push({
-                            rowIdx: i + 1, 
+                            rowIdx: i + 1,
                             rawDate: row[1] || '',
                             displayDate: formatFullDate(row[1]),
                             seat: parseInt(row[2]) || 0,
@@ -737,7 +793,7 @@
                             type: row[4] || ''
                         });
                     }
-                    
+
                     historyData = validData;
                     renderHistoryTable();
                 } else {
@@ -752,10 +808,10 @@
 
     function sortTable(colIndex) {
         if (currentSortCol === colIndex) {
-            sortAsc = !sortAsc; 
+            sortAsc = !sortAsc;
         } else {
             currentSortCol = colIndex;
-            sortAsc = true;     
+            sortAsc = true;
         }
         renderHistoryTable();
     }
@@ -772,8 +828,8 @@
             filteredData.sort((a, b) => {
                 let valA, valB;
                 if (currentSortCol === 0) {
-                    valA = new Date(a.rawDate.replace(/-/g, '/')).getTime();
-                    valB = new Date(b.rawDate.replace(/-/g, '/')).getTime();
+                    valA = new Date(String(a.rawDate).replace(/-/g, '/')).getTime();
+                    valB = new Date(String(b.rawDate).replace(/-/g, '/')).getTime();
                 } else if (currentSortCol === 1) {
                     valA = a.seat; valB = b.seat;
                 } else if (currentSortCol === 2) {
@@ -782,49 +838,42 @@
                     valA = a.type; valB = b.type;
                 }
 
-                if (valA !== valB) {
-                    if (valA < valB) return sortAsc ? -1 : 1;
-                    if (valA > valB) return sortAsc ? 1 : -1;
-                }
-                
-                return a.seat - b.seat;
+                if (valA < valB) return sortAsc ? -1 : 1;
+                if (valA > valB) return sortAsc ? 1 : -1;
+                return a.seat - b.seat; // 同值時固定以座號排序
             });
         }
 
         const recordsBody = document.getElementById('recordsBody');
-        recordsBody.innerHTML = '';
 
         if (filteredData.length === 0) {
             recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">無符合條件的紀錄</td></tr>';
         } else {
-            filteredData.forEach(item => {
-                recordsBody.innerHTML += `
+            // 一次組好字串再賦值，避免在迴圈中反覆 innerHTML += 造成的效能問題
+            recordsBody.innerHTML = filteredData.map(item => `
                     <tr>
-                        <td>${item.displayDate}</td>
-                        <td>${item.seat}</td>
-                        <td>${item.name}</td>
-                        <td>${item.type}</td>
+                        <td>${escapeHtml(item.displayDate)}</td>
+                        <td>${escapeHtml(item.seat)}</td>
+                        <td>${escapeHtml(item.name)}</td>
+                        <td>${escapeHtml(item.type)}</td>
                         <td>
-                            <button class="action-btn-small edit-btn" onclick="openEditModal(${item.rowIdx}, '${item.rawDate}', ${item.seat}, '${item.name}', '${item.type}')">編輯</button>
-                            <button class="action-btn-small del-btn" onclick="deleteRecord(${item.rowIdx}, '${item.name}', '${item.displayDate}')">刪除</button>
+                            <button class="action-btn-small edit-btn" data-action="edit" data-row="${item.rowIdx}" data-date="${escapeHtml(item.rawDate)}" data-seat="${escapeHtml(item.seat)}" data-name="${escapeHtml(item.name)}" data-type="${escapeHtml(item.type)}">編輯</button>
+                            <button class="action-btn-small del-btn" data-action="delete" data-row="${item.rowIdx}" data-name="${escapeHtml(item.name)}" data-display="${escapeHtml(item.displayDate)}">刪除</button>
                         </td>
                     </tr>
-                `;
-            });
+                `).join('');
         }
 
         document.querySelectorAll('.sort-icon').forEach((icon, idx) => {
-            if (idx === currentSortCol) {
-                icon.textContent = sortAsc ? '▲' : '▼';
-            } else {
-                icon.textContent = '';
-            }
+            icon.textContent = (idx === currentSortCol) ? (sortAsc ? '▲' : '▼') : '';
         });
     }
 
     function deleteRecord(rowIdx, studentName, displayDate) {
+        if (isBusy) return;
         if (!confirm(`確定要刪除 ${studentName} 在 ${displayDate} 的紀錄嗎？\n(刪除後無法復原)`)) return;
-        
+
+        setBusy(true);
         toggleLoading(true);
         fetch(scriptURL, {
             method: 'POST',
@@ -834,8 +883,9 @@
         .then(res => res.json())
         .then(res => {
             if (res.status === 'success') {
+                invalidateCache();
                 alert('刪除成功');
-                loadHistoryData(); 
+                loadHistoryData();
             } else {
                 alert('刪除失敗，請檢查後端是否已「建立新版本」');
                 toggleLoading(false);
@@ -844,29 +894,26 @@
         .catch(err => {
             alert('網路錯誤');
             toggleLoading(false);
-        });
+        })
+        .finally(() => setBusy(false));
     }
 
     function openEditModal(rowIdx, dateStr, seat, name, type) {
         document.getElementById('editRowIdx').value = rowIdx;
         document.getElementById('editStudentLabel').textContent = `${seat}號 - ${name}`;
-        
-        let formattedDate = dateStr;
-        if(dateStr && dateStr.includes('/')) {
-            formattedDate = dateStr.replace(/\//g, '-');
-        }
-        document.getElementById('editDate').value = formattedDate;
+        document.getElementById('editDate').value = toInputDate(dateStr);
         document.getElementById('editLeaveType').value = type;
-        
         document.getElementById('editModal').style.display = 'flex';
     }
 
     document.getElementById('saveEditBtn').addEventListener('click', () => {
+        if (isBusy) return;
         const rowIdx = document.getElementById('editRowIdx').value;
         const newDate = document.getElementById('editDate').value;
         const newType = document.getElementById('editLeaveType').value;
-        
+
         document.getElementById('editModal').style.display = 'none';
+        setBusy(true);
         toggleLoading(true);
 
         fetch(scriptURL, {
@@ -877,8 +924,9 @@
         .then(res => res.json())
         .then(res => {
             if (res.status === 'success') {
+                invalidateCache();
                 alert('修改成功');
-                loadHistoryData(); 
+                loadHistoryData();
             } else {
                 alert('修改失敗，請檢查後端是否已「建立新版本」');
                 toggleLoading(false);
@@ -887,8 +935,10 @@
         .catch(err => {
             alert('網路錯誤');
             toggleLoading(false);
-        });
+        })
+        .finally(() => setBusy(false));
     });
+
 </script>
 
 </body>
