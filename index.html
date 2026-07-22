@@ -479,6 +479,7 @@
     <div id="sectionView" class="tab-content">
         <div class="control-bar">
             <button class="control-btn" id="refreshHistoryBtn">🔄 載入歷史資料</button>
+            <span id="historyStatus" style="font-size:13px; color:#666; margin-left:8px;"></span>
             <select id="filterStudent" class="control-select" style="margin-left: auto;">
                 <option value="">📂 顯示全部學生</option>
             </select>
@@ -548,7 +549,33 @@
     // --- 全表讀取快取（Apps Script 讀取較慢，短時間內共用結果，寫入後失效）---
     let dataCache = null;
     let dataCacheTime = 0;
-    const CACHE_TTL = 4000; // 毫秒
+    const CACHE_TTL = 60000; // 毫秒；任何寫入都會使快取失效，故可放長
+
+    // --- localStorage 持久化：開啟 App 時先用上次的資料立即渲染，再背景更新 ---
+    const LS_RECORDS_KEY = 'cachedRecords';
+    let staleRecords = null; // 上次成功抓到的紀錄（可能不是最新）
+
+    function loadRecordsFromLS() {
+        try {
+            const raw = localStorage.getItem(LS_RECORDS_KEY);
+            if (!raw) return null;
+            const obj = JSON.parse(raw);
+            if (obj && Array.isArray(obj.data)) return obj.data;
+        } catch (e) {}
+        return null;
+    }
+
+    function saveRecordsToLS(data) {
+        try {
+            localStorage.setItem(LS_RECORDS_KEY, JSON.stringify({ time: Date.now(), data: data }));
+        } catch (e) {} // 容量已滿等狀況忽略即可，不影響功能
+    }
+
+    // 取得「任何可用的資料」：優先記憶體快取，其次上次存下的舊資料
+    function getAnyRecords() {
+        if (dataCache && dataCache.data) return dataCache.data;
+        return staleRecords;
+    }
 
     const dateInput = document.getElementById('targetDate');
     const studentListBody = document.getElementById('studentListBody');
@@ -584,14 +611,57 @@
         if (result.status === 'success') {
             dataCache = result;
             dataCacheTime = Date.now();
+            staleRecords = result.data;
+            saveRecordsToLS(result.data);
         }
         return result;
     }
     function invalidateCache() { dataCache = null; }
 
+    // 啟動時只發一次請求，同時取回「學生名單」與「出缺席紀錄」
+    async function bootstrapFromCloud() {
+        try {
+            const res = await fetch(scriptURL + '?action=getAll');
+            const result = await res.json();
+            if (result.status !== 'success') return;
+
+            // 紀錄
+            if (Array.isArray(result.data)) {
+                dataCache = { status: 'success', data: result.data };
+                dataCacheTime = Date.now();
+                staleRecords = result.data;
+                saveRecordsToLS(result.data);
+            }
+
+            // 名單：僅在有效且內容有變動時才更新，避免不必要的重繪與選取被清掉
+            if (Array.isArray(result.students)) {
+                const newList = parseStudentRows(result.students);
+                if (newList.length > 0 && JSON.stringify(newList) !== JSON.stringify(students)) {
+                    students = newList;
+                    localStorage.setItem('classStudentList', JSON.stringify(students));
+                    renderStudentTable();
+                    updateFilterOptions();
+                    updateMultiStudentOptions();
+                }
+            }
+
+            // 用最新資料重新渲染目前所在分頁
+            if (document.getElementById('sectionAdd').classList.contains('active')) {
+                applyTodayStatus(getAnyRecords());
+            } else if (document.getElementById('sectionView').classList.contains('active')) {
+                buildHistoryFrom(getAnyRecords());
+            }
+        } catch (e) {
+            // 背景更新失敗不打擾使用者，畫面仍有舊資料可用
+        }
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         dateInput.valueAsDate = new Date();
-        loadStudentsFromLocal();
+        staleRecords = loadRecordsFromLS();
+        loadStudentsFromLocal();   // 先用本機名單立即渲染
+        if (staleRecords) applyTodayStatus(staleRecords); // 先用舊紀錄立即顯示
+        bootstrapFromCloud();      // 再背景抓最新（名單+紀錄一次請求）
     });
 
     function switchTab(btn, sectionId) {
@@ -628,13 +698,27 @@
             } catch (e) {
                 students = [];
             }
-            renderStudentTable();
-            updateFilterOptions();
-            updateMultiStudentOptions();
-            syncTodayData();
-        } else {
-            loadStudentsFromCloud();
         }
+        renderStudentTable();
+        updateFilterOptions();
+        updateMultiStudentOptions();
+    }
+
+    // 把「學生名單」工作表的原始列轉成 {seat, name} 陣列
+    function parseStudentRows(rows) {
+        const list = [];
+        rows.forEach(row => {
+            const seat = row[0];
+            const name = row[1];
+            if (seat && name) {
+                const seatStr = String(seat).trim();
+                const nameStr = String(name).trim();
+                if (seatStr !== '座號' && seatStr !== '學號') {
+                    list.push({ seat: seatStr, name: nameStr });
+                }
+            }
+        });
+        return list;
     }
 
     document.getElementById('syncCloudRosterBtn').addEventListener('click', loadStudentsFromCloud);
@@ -645,18 +729,7 @@
             .then(res => res.json())
             .then(result => {
                 if (result.status === 'success') {
-                    let newList = [];
-                    result.data.forEach(row => {
-                        const seat = row[0];
-                        const name = row[1];
-                        if (seat && name) {
-                            const seatStr = String(seat).trim();
-                            const nameStr = String(name).trim();
-                            if (seatStr !== '座號' && seatStr !== '學號') {
-                                newList.push({ seat: seatStr, name: nameStr });
-                            }
-                        }
-                    });
+                    const newList = parseStudentRows(result.data);
 
                     if (newList.length > 0) {
                         students = newList;
@@ -824,11 +897,38 @@
         syncTodayData();
     });
 
-    async function syncTodayData() {
+    // 依指定資料把當日假別填入名單（可用舊資料先渲染，達到即時顯示）
+    function applyTodayStatus(records) {
+        if (!Array.isArray(records)) return;
         const targetD = dateInput.value;
+        const latestStatus = {};
+        records.forEach(row => {
+            const rDate = row[1] || '';
+            const rSeat = row[2] || '';
+            const rType = row[4] || '';
+            if (rDate === '日期' || rSeat === '座號' || rSeat === '學號') return;
+            if (String(rDate).trim() !== '' && isSameDate(rDate, targetD) && rType !== '銷假') {
+                latestStatus[rSeat] = rType;
+            }
+        });
+
+        document.querySelectorAll('.student-table tbody tr').forEach(tr => {
+            const seat = tr.dataset.seat;
+            const cell = tr.querySelector('.status-cell');
+            if (cell) cell.textContent = latestStatus[seat] || '';
+        });
+    }
+
+    async function syncTodayData() {
         const syncId = ++currentSyncId;
 
-        document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
+        // 先用手邊已有的資料立即渲染，使用者不必空等
+        const existing = getAnyRecords();
+        if (existing) {
+            applyTodayStatus(existing);
+        } else {
+            document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
+        }
         showMsg('同步資料中...', 'blue');
 
         try {
@@ -836,22 +936,7 @@
             if (syncId !== currentSyncId) return; // 已有更新的同步，放棄本次
 
             if (result.status === 'success' && result.data.length > 0) {
-                const latestStatus = {};
-                result.data.forEach(row => {
-                    const rDate = row[1] || '';
-                    const rSeat = row[2] || '';
-                    const rType = row[4] || '';
-                    if (rDate === '日期' || rSeat === '座號' || rSeat === '學號') return;
-                    if (String(rDate).trim() !== '' && isSameDate(rDate, targetD) && rType !== '銷假') {
-                        latestStatus[rSeat] = rType;
-                    }
-                });
-
-                document.querySelectorAll('.student-table tbody tr').forEach(tr => {
-                    const seat = tr.dataset.seat;
-                    const cell = tr.querySelector('.status-cell');
-                    if (cell) cell.textContent = latestStatus[seat] || '';
-                });
+                applyTodayStatus(result.data);
                 showMsg('資料已同步', 'green');
             } else {
                 showMsg('', 'black');
@@ -867,7 +952,7 @@
         setTimeout(() => { if (quickMsg.textContent === text) quickMsg.textContent = ''; }, 3000);
     }
 
-    document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistoryData);
+    document.getElementById('refreshHistoryBtn').addEventListener('click', () => loadHistoryData(true));
     document.getElementById('filterStudent').addEventListener('change', renderHistoryTable);
 
     // 事件委派：編輯 / 刪除按鈕（取代原本內嵌 onclick 字串，避免姓名含特殊字元造成注入或壞掉）
@@ -1055,44 +1140,73 @@
         }
     }
 
-    function loadHistoryData() {
-        toggleLoading(true);
+    // 把原始資料列轉成歷史紀錄並渲染
+    function buildHistoryFrom(records) {
         const recordsBody = document.getElementById('recordsBody');
-        recordsBody.innerHTML = '';
+        if (!Array.isArray(records) || records.length === 0) {
+            historyData = [];
+            recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">尚無紀錄</td></tr>';
+            return;
+        }
 
-        fetchAllData(true)
-            .then(result => {
-                toggleLoading(false);
-                if (result.status === 'success' && result.data.length > 0) {
-                    let validData = [];
-                    for (let i = 0; i < result.data.length; i++) {
-                        let row = result.data[i];
-
-                        if (row[1] === '日期' || row[2] === '座號' || row[2] === '學號') continue;
-                        if (!row[1] || !row[3] || String(row[1]).trim() === '' || String(row[3]).trim() === '' || row[4] === '銷假') {
-                            continue;
-                        }
-
-                        validData.push({
-                            rowIdx: i + 1,
-                            rawDate: row[1] || '',
-                            displayDate: formatFullDate(row[1]),
-                            seat: parseInt(row[2]) || 0,
-                            name: row[3] || '',
-                            type: row[4] || ''
-                        });
-                    }
-
-                    historyData = validData;
-                    renderHistoryTable();
-                } else {
-                    recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">尚無紀錄</td></tr>';
-                }
-            })
-            .catch(error => {
-                toggleLoading(false);
-                document.getElementById('recordsBody').innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">載入失敗</td></tr>';
+        const validData = [];
+        for (let i = 0; i < records.length; i++) {
+            const row = records[i];
+            if (row[1] === '日期' || row[2] === '座號' || row[2] === '學號') continue;
+            if (!row[1] || !row[3] || String(row[1]).trim() === '' || String(row[3]).trim() === '' || row[4] === '銷假') {
+                continue;
+            }
+            validData.push({
+                rowIdx: i + 1,
+                rawDate: row[1] || '',
+                displayDate: formatFullDate(row[1]),
+                seat: parseInt(row[2]) || 0,
+                name: row[3] || '',
+                type: row[4] || ''
             });
+        }
+
+        historyData = validData;
+        renderHistoryTable();
+    }
+
+    function setHistoryStatus(text, color) {
+        const el = document.getElementById('historyStatus');
+        if (el) {
+            el.textContent = text;
+            el.style.color = color || '#666';
+        }
+    }
+
+    async function loadHistoryData(force = false) {
+        // 先用手邊已有的資料立即顯示，避免盯著「載入中」
+        const existing = getAnyRecords();
+        if (existing) {
+            toggleLoading(false);
+            buildHistoryFrom(existing);
+            setHistoryStatus('背景更新中...', '#0066cc');
+        } else {
+            toggleLoading(true);
+            document.getElementById('recordsBody').innerHTML = '';
+        }
+
+        try {
+            const result = await fetchAllData(force);
+            toggleLoading(false);
+            if (result.status === 'success') {
+                buildHistoryFrom(result.data);
+                const t = new Date();
+                setHistoryStatus(`已更新 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`, '#2e7d32');
+            } else {
+                setHistoryStatus('更新失敗', 'red');
+            }
+        } catch (error) {
+            toggleLoading(false);
+            if (!existing) {
+                document.getElementById('recordsBody').innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">載入失敗</td></tr>';
+            }
+            setHistoryStatus('更新失敗（顯示的是先前資料）', 'red');
+        }
     }
 
     function sortTable(colIndex) {
