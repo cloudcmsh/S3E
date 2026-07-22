@@ -252,6 +252,32 @@
         }
 
         /* 手機版響應式設計：強制左右兩欄 */
+        /* 歷史紀錄：批次操作工具列 */
+        .batch-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            background: #eaf2ff;
+            border: 1px solid #b6d4fe;
+            border-radius: 5px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+        }
+        .batch-bar #batchCount {
+            font-weight: bold;
+            color: #0056b3;
+        }
+        .view-table td input[type="checkbox"],
+        .view-table th input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        .view-table tr.row-selected td {
+            background-color: #eaf2ff;
+        }
+
         /* 複數天數紀錄：日曆 */
         .multi-controls {
             display: flex;
@@ -485,10 +511,28 @@
             </select>
         </div>
         <div id="loadingMsg" class="loading-text" style="display: none;">資料載入中，請稍候...</div>
+
+        <!-- 批次操作工具列：選取任一筆後才顯示 -->
+        <div id="batchBar" class="batch-bar" style="display:none;">
+            <span id="batchCount">已選 0 筆</span>
+            <select id="batchLeaveType" class="control-select">
+                <option value="病假">病假</option>
+                <option value="事假">事假</option>
+                <option value="公假">公假</option>
+                <option value="喪假">喪假</option>
+                <option value="生理假">生理假</option>
+                <option value="曠課">曠課</option>
+            </select>
+            <button class="control-btn btn-blue" id="batchEditBtn">✏️ 批次改假別</button>
+            <button class="control-btn btn-red" id="batchDeleteBtn">🗑️ 批次刪除</button>
+            <button class="control-btn" id="batchClearBtn">取消選取</button>
+        </div>
+
         <div class="table-responsive">
             <table class="view-table" id="recordsTable" style="display: none;">
                 <thead>
                     <tr>
+                        <th style="width:36px;"><input type="checkbox" id="selectAllChk" title="全選 / 取消全選"></th>
                         <th onclick="sortTable(0)">日期 <span class="sort-icon"></span></th>
                         <th onclick="sortTable(1)">座號 <span class="sort-icon"></span></th>
                         <th onclick="sortTable(2)">姓名 <span class="sort-icon"></span></th>
@@ -597,7 +641,7 @@
 
     function setBusy(state) {
         isBusy = state;
-        document.querySelectorAll('.status-btn, .action-btn-small').forEach(b => b.disabled = state);
+        document.querySelectorAll('.status-btn, .action-btn-small, .control-btn').forEach(b => b.disabled = state);
     }
 
     // 讀取整張表（含快取）；force=true 強制重抓
@@ -1145,7 +1189,7 @@
         const recordsBody = document.getElementById('recordsBody');
         if (!Array.isArray(records) || records.length === 0) {
             historyData = [];
-            recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">尚無紀錄</td></tr>';
+            recordsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;">尚無紀錄</td></tr>';
             return;
         }
 
@@ -1203,11 +1247,117 @@
         } catch (error) {
             toggleLoading(false);
             if (!existing) {
-                document.getElementById('recordsBody').innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">載入失敗</td></tr>';
+                document.getElementById('recordsBody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:red;">載入失敗</td></tr>';
             }
             setHistoryStatus('更新失敗（顯示的是先前資料）', 'red');
         }
     }
+
+    // ===================== 歷史紀錄：批次操作 =====================
+    const selectedRows = new Set(); // 已勾選的列號
+    let currentFiltered = [];       // 目前畫面上顯示的資料
+
+    function updateBatchBar() {
+        const bar = document.getElementById('batchBar');
+        const n = selectedRows.size;
+        bar.style.display = n > 0 ? 'flex' : 'none';
+        document.getElementById('batchCount').textContent = `已選 ${n} 筆`;
+
+        // 全選勾選框狀態
+        const allChk = document.getElementById('selectAllChk');
+        const visible = currentFiltered.map(i => i.rowIdx);
+        const allSelected = visible.length > 0 && visible.every(r => selectedRows.has(r));
+        allChk.checked = allSelected;
+        allChk.indeterminate = !allSelected && visible.some(r => selectedRows.has(r));
+    }
+
+    function clearSelection() {
+        selectedRows.clear();
+        document.querySelectorAll('.row-chk').forEach(c => c.checked = false);
+        document.querySelectorAll('#recordsBody tr').forEach(tr => tr.classList.remove('row-selected'));
+        updateBatchBar();
+    }
+
+    // 勾選（事件委派）
+    document.getElementById('recordsBody').addEventListener('change', (e) => {
+        const chk = e.target.closest('.row-chk');
+        if (!chk) return;
+        const rowIdx = parseInt(chk.dataset.row);
+        if (chk.checked) selectedRows.add(rowIdx); else selectedRows.delete(rowIdx);
+        chk.closest('tr').classList.toggle('row-selected', chk.checked);
+        updateBatchBar();
+    });
+
+    document.getElementById('selectAllChk').addEventListener('change', function() {
+        const on = this.checked;
+        currentFiltered.forEach(item => {
+            if (on) selectedRows.add(item.rowIdx); else selectedRows.delete(item.rowIdx);
+        });
+        document.querySelectorAll('.row-chk').forEach(c => {
+            c.checked = on;
+            c.closest('tr').classList.toggle('row-selected', on);
+        });
+        updateBatchBar();
+    });
+
+    document.getElementById('batchClearBtn').addEventListener('click', clearSelection);
+
+    // 取得已選取列的驗證資料（帶上日期與座號，後端會比對確認才動手）
+    function getSelectedPayload() {
+        return historyData
+            .filter(item => selectedRows.has(item.rowIdx))
+            .map(item => ({ row: item.rowIdx, date: item.rawDate, seat: item.seat }));
+    }
+
+    async function runBatch(action, extra, confirmText, doneLabel) {
+        if (isBusy) return;
+        const rows = getSelectedPayload();
+        if (rows.length === 0) { setHistoryStatus('尚未選取任何紀錄', 'red'); return; }
+        if (!confirm(confirmText.replace('{n}', rows.length))) return;
+
+        setBusy(true);
+        toggleLoading(true);
+        try {
+            const res = await fetch(scriptURL, {
+                method: 'POST',
+                body: JSON.stringify(Object.assign({ action: action, rows: rows }, extra)),
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+            });
+            const result = await res.json();
+            if (result.status === 'success') {
+                invalidateCache();
+                selectedRows.clear();
+                const skipped = result.skipped || 0;
+                await loadHistoryData(true);
+                if (skipped > 0) {
+                    alert(`${doneLabel} ${result.applied} 筆。\n有 ${skipped} 筆因資料已被其他人變更而略過，畫面已重新整理，請確認後再操作一次。`);
+                } else {
+                    setHistoryStatus(`${doneLabel} ${result.applied} 筆`, '#2e7d32');
+                }
+            } else {
+                toggleLoading(false);
+                alert('操作失敗：' + (result.message || '請確認後端已建立新版本'));
+            }
+        } catch (e) {
+            toggleLoading(false);
+            alert('網路錯誤，請重試');
+        } finally {
+            setBusy(false);
+            updateBatchBar();
+        }
+    }
+
+    document.getElementById('batchEditBtn').addEventListener('click', () => {
+        const newType = document.getElementById('batchLeaveType').value;
+        runBatch('editBatch', { leaveType: newType },
+            `確定要把選取的 {n} 筆紀錄假別改成「${newType}」嗎？`, '已修改');
+    });
+
+    document.getElementById('batchDeleteBtn').addEventListener('click', () => {
+        runBatch('deleteBatch', {},
+            '確定要刪除選取的 {n} 筆紀錄嗎？\n(刪除後無法復原)', '已刪除');
+    });
+    // =================== 歷史紀錄：批次操作 結束 ===================
 
     function sortTable(colIndex) {
         if (currentSortCol === colIndex) {
@@ -1248,13 +1398,15 @@
         }
 
         const recordsBody = document.getElementById('recordsBody');
+        currentFiltered = filteredData; // 供「全選」使用
 
         if (filteredData.length === 0) {
-            recordsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">無符合條件的紀錄</td></tr>';
+            recordsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;">無符合條件的紀錄</td></tr>';
         } else {
             // 一次組好字串再賦值，避免在迴圈中反覆 innerHTML += 造成的效能問題
             recordsBody.innerHTML = filteredData.map(item => `
-                    <tr>
+                    <tr class="${selectedRows.has(item.rowIdx) ? 'row-selected' : ''}">
+                        <td><input type="checkbox" class="row-chk" data-row="${item.rowIdx}"${selectedRows.has(item.rowIdx) ? ' checked' : ''}></td>
                         <td>${escapeHtml(item.displayDate)}</td>
                         <td>${escapeHtml(item.seat)}</td>
                         <td>${escapeHtml(item.name)}</td>
@@ -1270,6 +1422,8 @@
         document.querySelectorAll('.sort-icon').forEach((icon, idx) => {
             icon.textContent = (idx === currentSortCol) ? (sortAsc ? '▲' : '▼') : '';
         });
+
+        updateBatchBar();
     }
 
     function deleteRecord(rowIdx, studentName, displayDate) {
