@@ -431,6 +431,7 @@
     <div id="sectionAdd" class="tab-content active">
         <div class="control-bar">
             <label>📅 日期：<input type="date" id="targetDate"></label>
+            <button class="control-btn" id="todayBtn">📆 回到今天</button>
             <button class="control-btn btn-blue" id="syncCloudRosterBtn">☁️ 從雲端同步名單</button>
             <button class="control-btn" id="syncTodayBtn">🔄 重新整理紀錄</button>
             <span id="quickMsg" class="msg-text" style="color: green; margin-left: auto;"></span>
@@ -937,6 +938,21 @@
 
     document.getElementById('syncTodayBtn').addEventListener('click', syncTodayData);
     dateInput.addEventListener('change', () => {
+        document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
+        syncTodayData();
+    });
+
+    document.getElementById('todayBtn').addEventListener('click', () => {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${y}-${m}-${d}`;
+        if (dateInput.value === todayStr) {
+            showMsg('目前已是今天', 'green');
+            return;
+        }
+        dateInput.value = todayStr;
         document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
         syncTodayData();
     });
