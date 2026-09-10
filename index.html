@@ -177,6 +177,36 @@
         .clear-btn:hover {
             background-color: #c82333;
         }
+        /* 送出按鈕與未送出狀態 */
+        .submit-btn {
+            margin-top: 14px;
+            background-color: #28a745 !important;
+            color: #fff !important;
+            font-weight: bold;
+            border-color: #1e7e34 !important;
+        }
+        .submit-btn:hover { background-color: #218838 !important; }
+        .submit-btn.has-pending {
+            box-shadow: 0 0 0 3px rgba(40,167,69,0.25);
+        }
+        .pending-hint {
+            text-align: center;
+            font-size: 13px;
+            color: #d9822b;
+            min-height: 18px;
+            margin-top: 6px;
+        }
+        /* 未送出的當日狀態 */
+        .status-cell.unsaved {
+            color: #d9822b;
+            font-weight: bold;
+        }
+        .status-cell.unsaved::after {
+            content: " ●";
+            color: #d9822b;
+            font-size: 11px;
+            vertical-align: middle;
+        }
 
         .table-responsive {
             overflow-x: auto;
@@ -461,6 +491,8 @@
                 <button class="status-btn" onclick="setStatus('生理假')">生理假</button>
                 <button class="status-btn" onclick="setStatus('曠課')">曠課</button>
                 <button class="status-btn clear-btn" onclick="setStatus('銷假')">❌ 銷假 / 清除</button>
+                <div id="pendingHint" class="pending-hint"></div>
+                <button class="status-btn submit-btn" id="submitDayBtn" onclick="submitDay()">📤 送出</button>
             </div>
         </div>
     </div>
@@ -549,6 +581,15 @@
 </div>
 
 <!-- 編輯紀錄 Modal -->
+<div id="successModal" class="modal">
+    <div class="modal-content" style="text-align:center; max-width:320px;">
+        <div style="font-size:44px; line-height:1;">✅</div>
+        <h3 style="margin:12px 0 6px;">登錄完成</h3>
+        <p id="successMsg" style="color:#555; margin:0 0 18px;"></p>
+        <button class="control-btn btn-blue" onclick="hideSuccessModal()" style="min-width:120px;">確定</button>
+    </div>
+</div>
+
 <div id="editModal" class="modal">
     <div class="modal-content">
         <h3>編輯紀錄</h3>
@@ -703,6 +744,7 @@
 
     document.addEventListener("DOMContentLoaded", () => {
         dateInput.valueAsDate = new Date();
+        lastLoadedDate = dateInput.value;
         staleRecords = loadRecordsFromLS();
         loadStudentsFromLocal();   // 先用本機名單立即渲染
         if (staleRecords) applyTodayStatus(staleRecords); // 先用舊紀錄立即顯示
@@ -838,65 +880,119 @@
     }
 
     // --- 狀態設定與發送 API（後端已支援 upsert 與批次清除，前端一次請求即可）---
-    async function setStatus(leaveType) {
-        if (isBusy) return; // 防連點
+    // 點假別：只在本機記錄變更、立即顯示並跳下一位，不即時送出
+    // （改為按「送出」時一次批次送出，可把多次網路往返合併為一次）
+    const pendingChanges = new Map(); // seat -> { name, leaveType }（銷假代表清除）
+
+    function setStatus(leaveType) {
+        if (isBusy) return;
         if (!selectedStudent) {
             showMsg('請先從左側名單點選學生！', 'red');
             return;
         }
-
-        const dateVal = dateInput.value;
         const seat = selectedStudent.seat;
         const name = selectedStudent.name;
         const rowEl = selectedStudent.element;
         const statusCell = rowEl.querySelector('.status-cell');
 
-        setBusy(true);
-        try {
-            // 銷假：呼叫後端批次清除，一次請求刪掉當日該生所有紀錄
-            if (leaveType === '銷假') {
-                showMsg('清除紀錄中...', 'blue');
-                const res = await fetch(scriptURL, {
-                    method: 'POST',
-                    body: JSON.stringify({ action: 'deleteByStudentDate', date: dateVal, studentId: seat }),
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-                });
-                const result = await res.json();
-                if (result.status === 'success') {
-                    invalidateCache();
-                    const n = result.deleted || 0;
-                    showMsg(n > 0 ? `已清除 ${name} 當日紀錄` : `當日無 ${name} 的紀錄`, 'green');
-                    statusCell.textContent = '';
-                    goToNextRow(rowEl);
-                } else {
-                    showMsg('清除失敗', 'red');
-                }
-                return;
-            }
+        pendingChanges.set(seat, { name: name, leaveType: leaveType });
+        statusCell.textContent = (leaveType === '銷假') ? '' : leaveType;
+        statusCell.classList.add('unsaved');
+        updatePendingUI();
+        goToNextRow(rowEl);
+    }
 
-            // 一般假別：後端會自動 upsert（同日同座號存在就更新、否則新增），前端只送一次
-            showMsg('傳送中...', 'blue');
+    function updatePendingUI() {
+        const n = pendingChanges.size;
+        const btn = document.getElementById('submitDayBtn');
+        const hint = document.getElementById('pendingHint');
+        if (btn) {
+            btn.textContent = n > 0 ? `📤 送出 (${n})` : '📤 送出';
+            btn.classList.toggle('has-pending', n > 0);
+        }
+        if (hint) hint.textContent = n > 0 ? `尚有 ${n} 筆未送出` : '';
+    }
+
+    // 把 pending 變更覆蓋到名單上（同步後重新標示未送出項目）
+    function applyPendingOverlay() {
+        document.querySelectorAll('.student-table tbody tr').forEach(tr => {
+            const seat = tr.dataset.seat;
+            const cell = tr.querySelector('.status-cell');
+            if (!cell) return;
+            if (pendingChanges.has(seat)) {
+                const p = pendingChanges.get(seat);
+                cell.textContent = (p.leaveType === '銷假') ? '' : p.leaveType;
+                cell.classList.add('unsaved');
+            } else {
+                cell.classList.remove('unsaved');
+            }
+        });
+    }
+
+    function discardPending() {
+        pendingChanges.clear();
+        document.querySelectorAll('.status-cell.unsaved').forEach(c => c.classList.remove('unsaved'));
+        updatePendingUI();
+    }
+
+    // 若有未送出變更，詢問是否放棄；回傳 true 表示可繼續
+    function confirmDiscardPending() {
+        if (pendingChanges.size === 0) return true;
+        return confirm(`有 ${pendingChanges.size} 筆尚未送出，繼續將放棄這些變更，確定嗎？`);
+    }
+
+    function showSuccessModal(n) {
+        document.getElementById('successMsg').textContent = `已成功送出 ${n} 筆登錄。`;
+        document.getElementById('successModal').style.display = 'flex';
+    }
+    function hideSuccessModal() {
+        document.getElementById('successModal').style.display = 'none';
+    }
+
+    async function submitDay() {
+        if (isBusy) return;
+        if (pendingChanges.size === 0) {
+            showMsg('沒有需要送出的變更', 'blue');
+            return;
+        }
+        const dateVal = dateInput.value;
+        const entries = [];
+        pendingChanges.forEach((v, seat) => {
+            entries.push({ studentId: seat, studentName: v.name, leaveType: v.leaveType });
+        });
+
+        setBusy(true);
+        showMsg('送出中...', 'blue');
+        try {
             const res = await fetch(scriptURL, {
                 method: 'POST',
-                body: JSON.stringify({ action: 'add', date: dateVal, studentId: seat, studentName: name, leaveType: leaveType, note: '' }),
+                body: JSON.stringify({ action: 'submitDay', date: dateVal, entries: entries }),
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' }
             });
             const result = await res.json();
-
             if (result.status === 'success') {
                 invalidateCache();
-                showMsg(`已更新 ${name} 為：${leaveType}`, 'green');
-                statusCell.textContent = leaveType;
-                goToNextRow(rowEl);
+                const applied = (typeof result.applied === 'number') ? result.applied : entries.length;
+                discardPending();
+                showMsg('', 'black');
+                showSuccessModal(applied);
             } else {
-                showMsg('紀錄失敗，請重試。', 'red');
+                showMsg('送出失敗：' + (result.message || '請重試'), 'red');
             }
-        } catch (error) {
-            showMsg('傳送失敗(網路錯誤)', 'red');
+        } catch (e) {
+            showMsg('送出失敗(網路錯誤)，變更仍保留，請重試', 'red');
         } finally {
             setBusy(false);
         }
     }
+
+    // 離開頁面前，若有未送出變更則提醒
+    window.addEventListener('beforeunload', (e) => {
+        if (pendingChanges.size > 0) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
 
     function isSameDate(dateStr1, dateStr2) {
         if (!dateStr1 || !dateStr2) return false;
@@ -937,7 +1033,16 @@
     }
 
     document.getElementById('syncTodayBtn').addEventListener('click', syncTodayData);
+
+    let lastLoadedDate = null; // 目前畫面對應的日期，供還原用
+
     dateInput.addEventListener('change', () => {
+        if (!confirmDiscardPending()) {
+            dateInput.value = lastLoadedDate; // 使用者取消 → 還原日期
+            return;
+        }
+        discardPending();
+        lastLoadedDate = dateInput.value;
         document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
         syncTodayData();
     });
@@ -952,7 +1057,10 @@
             showMsg('目前已是今天', 'green');
             return;
         }
+        if (!confirmDiscardPending()) return;
+        discardPending();
         dateInput.value = todayStr;
+        lastLoadedDate = todayStr;
         document.querySelectorAll('.status-cell').forEach(cell => cell.textContent = '');
         syncTodayData();
     });
@@ -977,6 +1085,8 @@
             const cell = tr.querySelector('.status-cell');
             if (cell) cell.textContent = latestStatus[seat] || '';
         });
+
+        applyPendingOverlay(); // 保留尚未送出的變更標記
     }
 
     async function syncTodayData() {
